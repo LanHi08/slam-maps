@@ -1,0 +1,42 @@
+{
+  "maps": [
+    {
+      "id": "corridor",
+      "name": "Corridor",
+      "note": "Feature-scarce corridor - degeneracy detected for 87% of the run",
+      "file": "corridor.bin",
+      "count": 101712,
+      "origin": [
+        -8.548157691955566,
+        -5.67172384262085,
+        -0.03980390727519989
+      ],
+      "span": [
+        41.3789644241333,
+        19.447800159454346,
+        1.8294660300016403
+      ],
+      "raw_points": 125197,
+      "voxel": 0.07
+    },
+    {
+      "id": "course1",
+      "name": "Course 1",
+      "note": "Feature-rich obstacle course - 82 m autonomous path, ATE 0.109 m",
+      "file": "course1.bin",
+      "count": 241993,
+      "origin": [
+        -12.111383438110352,
+        -29.29139518737793,
+        -0.09370912611484528
+      ],
+      "span": [
+        18.621397495269775,
+        31.84354543685913,
+        3.3423158079385757
+      ],
+      "raw_points": 443661,
+      "voxel": 0.1
+    }
+  ]
+}

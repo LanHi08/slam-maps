@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>3D LiDAR Maps — Robust 3D LiDAR SLAM Framework</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin:0; height:100%; overflow:hidden; background:#07090d;
+               font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+               color:#e8ecf1; }
+  #view { position:fixed; inset:0; }
+  #top { position:fixed; top:0; left:0; right:0; padding:10px 12px 12px;
+         background:linear-gradient(180deg, rgba(7,9,13,.92), rgba(7,9,13,0));
+         pointer-events:none; z-index:5; }
+  #title { font-size:15px; font-weight:700; letter-spacing:.2px; }
+  #sub { font-size:11.5px; color:#94a3b8; margin-top:2px; }
+  #tabs { position:fixed; bottom:0; left:0; right:0; display:flex; gap:8px;
+          padding:10px 12px calc(10px + env(safe-area-inset-bottom));
+          background:linear-gradient(0deg, rgba(7,9,13,.94), rgba(7,9,13,0)); z-index:6; }
+  .tab { flex:1; padding:11px 6px; border-radius:10px; border:1px solid #2a3442;
+         background:#121821; color:#cbd5e1; font-size:13px; font-weight:600;
+         text-align:center; cursor:pointer; transition:.15s; }
+  .tab.on { background:#1d4ed8; border-color:#3b6ef5; color:#fff; }
+  #hud { position:fixed; right:12px; top:64px; text-align:right; font-size:11px;
+         color:#8fa0b5; z-index:5; line-height:1.55; pointer-events:none; }
+  #hint { position:fixed; left:12px; bottom:74px; font-size:11px; color:#7c8b9e;
+          z-index:5; pointer-events:none; }
+  #load { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+          background:#07090d; z-index:20; flex-direction:column; gap:14px; }
+  #bar { width:190px; height:4px; background:#1b2430; border-radius:2px; overflow:hidden; }
+  #bar > i { display:block; height:100%; width:0%; background:#3b6ef5; transition:width .2s; }
+  #loadtxt { font-size:12.5px; color:#94a3b8; }
+  #err { position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+         background:#07090d; z-index:30; padding:28px; text-align:center;
+         font-size:13px; color:#f87171; line-height:1.6; }
+  .ctl { position:fixed; right:12px; bottom:78px; display:flex; flex-direction:column;
+         gap:8px; z-index:6; }
+  .btn { width:42px; height:42px; border-radius:10px; border:1px solid #2a3442;
+         background:#121821cc; color:#cbd5e1; font-size:17px; cursor:pointer; }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="top">
+  <div id="title">3D LiDAR Maps</div>
+  <div id="sub">Built by a tightly coupled LiDAR-inertial SLAM framework · ROS 2 Foxy</div>
+</div>
+
+<div id="hud"></div>
+<div id="hint">drag to orbit · pinch to zoom · two fingers to pan</div>
+
+<div class="ctl">
+  <button class="btn" id="reset" title="Reset view">⟳</button>
+  <button class="btn" id="bigger" title="Larger points">+</button>
+  <button class="btn" id="smaller" title="Smaller points">−</button>
+  <button class="btn" id="colour" title="Toggle colouring">◐</button>
+</div>
+
+<div id="tabs"></div>
+
+<div id="load">
+  <div id="loadtxt">loading…</div>
+  <div id="bar"><i></i></div>
+</div>
+<div id="err"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var scene, camera, renderer, controls, cloud = null;
+  var manifest = null, current = null, pointSize = 0.035, colourMode = 0;
+  var cache = {};
+
+  function fail(msg) {
+    document.getElementById('load').style.display = 'none';
+    var e = document.getElementById('err');
+    e.style.display = 'flex';
+    e.innerHTML = msg;
+  }
+
+  function init() {
+    var cv = document.getElementById('view');
+    renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x07090d, 1);
+
+    scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x07090d, 0.012);
+
+    camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 800);
+    camera.up.set(0, 0, 1);                      // z-up, matching the robot frame
+    camera.position.set(14, -14, 11);
+
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.09;
+    controls.screenSpacePanning = false;
+    controls.maxPolarAngle = Math.PI * 0.98;
+
+    var grid = new THREE.GridHelper(60, 60, 0x1e2836, 0x141c26);
+    grid.rotation.x = Math.PI / 2;               // GridHelper is xz by default
+    scene.add(grid);
+
+    window.addEventListener('resize', function () {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    document.getElementById('reset').onclick = function () { frame(current); };
+    document.getElementById('bigger').onclick = function () { setSize(pointSize * 1.4); };
+    document.getElementById('smaller').onclick = function () { setSize(pointSize / 1.4); };
+    document.getElementById('colour').onclick = function () {
+      colourMode = (colourMode + 1) % 2;
+      if (current) build(current, cache[current.id]);
+    };
+
+    animate();
+  }
+
+  function setSize(s) {
+    pointSize = Math.max(0.008, Math.min(0.25, s));
+    if (cloud) cloud.material.size = pointSize;
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  // blue -> cyan -> green -> yellow -> red, matching the RViz height ramp
+  function ramp(t, out, i) {
+    t = Math.max(0, Math.min(1, t));
+    var r, g, b;
+    if (t < 0.25)      { r = 0;               g = t * 4;            b = 1; }
+    else if (t < 0.5)  { r = 0;               g = 1;                b = 1 - (t - 0.25) * 4; }
+    else if (t < 0.75) { r = (t - 0.5) * 4;   g = 1;                b = 0; }
+    else               { r = 1;               g = 1 - (t - 0.75) * 4; b = 0; }
+    out[i] = r; out[i + 1] = g; out[i + 2] = b;
+  }
+
+  function build(map, buf) {
+    if (cloud) { scene.remove(cloud); cloud.geometry.dispose(); cloud.material.dispose(); }
+
+    var bytes = new Uint8Array(buf);
+    var n = map.count;
+    var q = new Int16Array(buf);                 // stride 4 int16 = 8 bytes
+    var pos = new Float32Array(n * 3);
+    var col = new Float32Array(n * 3);
+    var ox = map.origin[0], oy = map.origin[1], oz = map.origin[2];
+    var sx = map.span[0] / 65534, sy = map.span[1] / 65534, sz = map.span[2] / 65534;
+
+    for (var i = 0; i < n; i++) {
+      var b = i * 4;
+      var x = (q[b] + 32767) * sx + ox;
+      var y = (q[b + 1] + 32767) * sy + oy;
+      var z = (q[b + 2] + 32767) * sz + oz;
+      pos[i * 3] = x; pos[i * 3 + 1] = y; pos[i * 3 + 2] = z;
+      var t = colourMode === 0
+        ? (z - oz) / Math.max(map.span[2], 1e-6)   // height
+        : bytes[i * 8 + 6] / 255;                  // intensity
+      ramp(t, col, i * 3);
+    }
+
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.computeBoundingSphere();
+
+    cloud = new THREE.Points(g, new THREE.PointsMaterial({
+      size: pointSize, vertexColors: true, sizeAttenuation: true
+    }));
+    scene.add(cloud);
+
+    document.getElementById('hud').innerHTML =
+      n.toLocaleString() + ' points<br>' +
+      map.span[0].toFixed(1) + ' × ' + map.span[1].toFixed(1) + ' m<br>' +
+      'colour: ' + (colourMode === 0 ? 'height' : 'intensity');
+  }
+
+  function frame(map) {
+    if (!map) return;
+    var r = Math.max(map.span[0], map.span[1]) * 0.85;
+    controls.target.set(map.origin[0] + map.span[0] / 2,
+                        map.origin[1] + map.span[1] / 2,
+                        map.origin[2] + map.span[2] / 2);
+    camera.position.set(controls.target.x + r, controls.target.y - r,
+                        controls.target.z + r * 0.75);
+    controls.update();
+  }
+
+  function show(map) {
+    current = map;
+    document.querySelectorAll('.tab').forEach(function (t) {
+      t.classList.toggle('on', t.dataset.id === map.id);
+    });
+    document.getElementById('sub').textContent = map.note || 'saved 3D point cloud';
+
+    if (cache[map.id]) { build(map, cache[map.id]); frame(map); return; }
+
+    var ld = document.getElementById('load');
+    var bar = document.querySelector('#bar > i');
+    ld.style.display = 'flex';
+    document.getElementById('loadtxt').textContent = 'loading ' + map.name + '…';
+    bar.style.width = '0%';
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', 'maps/' + map.file, true);
+    xhr.responseType = 'arraybuffer';
+    xhr.onprogress = function (e) {
+      if (e.lengthComputable) bar.style.width = (e.loaded / e.total * 100) + '%';
+    };
+    xhr.onload = function () {
+      if (xhr.status !== 200) { fail('Could not load maps/' + map.file); return; }
+      cache[map.id] = xhr.response;
+      build(map, xhr.response);
+      frame(map);
+      ld.style.display = 'none';
+    };
+    xhr.onerror = function () { fail('Network error loading maps/' + map.file); };
+    xhr.send();
+  }
+
+  function start(mf) {
+    manifest = mf;
+    if (!mf.maps || !mf.maps.length) { fail('manifest.json lists no maps'); return; }
+    var tabs = document.getElementById('tabs');
+    mf.maps.forEach(function (m) {
+      var b = document.createElement('div');
+      b.className = 'tab'; b.textContent = m.name; b.dataset.id = m.id;
+      b.onclick = function () { show(m); };
+      tabs.appendChild(b);
+    });
+    show(mf.maps[0]);
+  }
+
+  if (!window.THREE) {
+    fail('Could not load the 3D library.<br>Check your internet connection and reload.');
+    return;
+  }
+  init();
+
+  fetch('maps/manifest.json', { cache: 'no-cache' })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(start)
+    .catch(function () {
+      fail('Could not load maps/manifest.json.<br>'
+         + 'Run pack_map.py and commit the maps/ folder.');
+    });
+})();
+</script>
+</body>
+</html>
